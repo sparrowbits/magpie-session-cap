@@ -59,11 +59,11 @@ magpie plugin list                                # is it on?
 | --- | --- | --- |
 | `providers` | all | only these provider ids. Taken from the `provider/` prefix of the model magpie routes on, or `ctx.provider` when the host gives one. |
 | `models` | all | only when the routed model contains one of these substrings. |
-| `protocols` | all | `responses` \| `chat` \| `anthropic` \| `gemini`. |
+| `protocols` | all | The middleware itself only handles `responses`; other protocols always pass through unchanged. This field is reserved for future protocol-specific handlers. |
 | `keepTurns` | `9` | recent turns kept verbatim; older ones folded. The hard cap is 10 — set it to 10 only if your client never adds a user message of its own. |
 | `turnCap` | `keepTurns` | fold once user messages exceed this. |
 | `fold` | `true` | `false` drops the old turns instead of folding them: cheaper, and the model genuinely forgets. |
-| `foldTarget` | `developer` | where the digest goes: `developer` \| `system` \| `user` \| `file`. Only `user` costs a turn. |
+| `foldTarget` | `developer` | where the digest goes: `developer` \| `system` \| `user` \| `file`. Only `user` costs a turn. The digest is labelled as untrusted historical context, not a new instruction. |
 | `foldLabel` | built in | first line of the digest; say what it is, the model reads it literally. |
 | `itemChars` | `20000` | cap on one quoted item. Over the cap it keeps **the first 60% and the last 40%** and marks the gap: the tail of a tool output is where errors and totals sit. |
 | `foldChars` | `1200000` | cap on the digest. Over it, keeps **the oldest fifth and the newest rest**: the opening turns hold the decisions everything later rests on. |
@@ -109,7 +109,7 @@ magpie plugin list                                # is it on?
 
 ## Verified behaviour
 
-`npm test` runs 17 cases over the fold and the roll: turn counting, digest placement, no `function_call` ever split from its `function_call_output`, preamble preserved, early facts surviving a fold and genuinely lost without it, head-and-tail clipping, the budget plateau across 40/120/400-turn sessions, key stability inside a bucket and advance across buckets, scoping, and that the caller's own body object is never mutated.
+`npm test` runs 19 cases over the fold and the roll: turn counting, digest placement, no `function_call` ever split from its `function_call_output`, preamble preserved, early facts surviving a fold and genuinely lost without it, head-and-tail clipping, the budget plateau across 40/120/400-turn sessions, key stability inside a bucket and advance across buckets, scoping, and that the caller's own body object is never mutated.
 
 End to end, through magpie's `/backend-api/codex/responses` on a real 60-turn conversation with facts planted in turns 2, 5 and 30:
 
@@ -138,7 +138,7 @@ magpie plugin on|off magpie-session-cap
 magpie plugin rm magpie-session-cap
 ```
 
-Version the releases with tags (`v1.0.0`); a git install follows the default branch, so tag before pushing a breaking change if you depend on it.
+Version releases with tags (`v1.0.1`); `magpie plugin update` follows the GitHub source and installs the newest version. For a stable pin, install from the npm version once published.
 
 ## How it decides, in one paragraph
 

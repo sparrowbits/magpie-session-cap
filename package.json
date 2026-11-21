@@ -1,6 +1,6 @@
 {
   "name": "magpie-session-cap",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "magpie gateway middleware that keeps one Codex conversation inside a relay channel's per-session caps — 100 requests per prompt_cache_key and 10 turns per request — by rolling the cache key and folding older turns into a digest message that costs no turn.",
   "type": "module",
   "main": "./session-cap.middleware.js",
@@ -42,13 +42,13 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test"
   },
   "magpie": {
     "middleware": "./session-cap.middleware.js",
     "name": "Session Cap",
     "summary": {
-      "en": "Keep a Codex conversation inside a relay channel's per-session caps: rolls prompt_cache_key past the request cap and folds older turns into a digest that costs no turn, so neither the 100-request nor the 10-turn limit ends the chat.",
+      "en": "Keep Codex Responses conversations inside relay per-session request and turn caps by rolling prompt_cache_key and folding quoted history into a no-turn developer message.",
       "zh": "绕开中转渠道的会话级上限：100 次请求按 prompt_cache_key 计数，就轮换这个键；10 轮对话按请求体里 user 消息条数计数，就把更早的轮次折叠成一条不占轮次的摘要消息。两条上限都不再中断当前会话，且历史内容保留。"
     },
     "options": {

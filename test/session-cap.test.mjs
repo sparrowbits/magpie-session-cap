@@ -82,6 +82,7 @@ test("foldTarget moves the digest between developer, system, user and file", () 
     const out = onRequest({ model: "m", prompt_cache_key: "th", input: history(30) }, ctx({ keepTurns: 9, foldTarget: target }));
     assert.equal(out.input[1].role, role, target);
     const part = out.input[1].content[0];
+    assert.ok(users(out.input) <= 10, target + " must stay under the relay turn cap");
     if (target === "file") {
       assert.equal(part.type, "input_file");
       assert.equal(part.filename, "folded-history.txt");
@@ -187,6 +188,24 @@ test("requests with nothing to fold or no key to roll are returned untouched", (
   assert.equal(onRequest({ model: "m", prompt_cache_key: "th" }, ctx()), undefined, "no input array");
   assert.equal(onRequest({ model: "m", prompt_cache_key: "th", input: [] }, ctx()), undefined, "empty input");
   assert.equal(onRequest({ model: "m", prompt_cache_key: "th", input: history(30) }, ctx({ keepTurns: 9, dryRun: true })), undefined, "dryRun");
+});
+
+test("file mode round-trips Unicode including astral characters", () => {
+  const input = history(30);
+  input[2] = U("The marker is rocket 🚀 and brain 🧠 and staging database dlhcbqwoq-9");
+  const out = onRequest({ model: "m", prompt_cache_key: "th", input }, ctx({ keepTurns: 9, foldTarget: "file" }));
+  const part = out.input[1].content[0];
+  const decoded = Buffer.from(part.file_data.split(",")[1], "base64").toString("utf8");
+  assert.match(decoded, /🚀/);
+  assert.match(decoded, /🧠/);
+  assert.match(decoded, /dlhcbqwoq-9/);
+});
+
+test("non-Responses protocols pass through unchanged", () => {
+  for (const protocol of ["chat", "anthropic", "gemini", "unknown"]) {
+    const body = { model: "xingchiapi/gpt-6.1-sol", prompt_cache_key: "th", input: history(30) };
+    assert.equal(onRequest(body, ctx({}, { protocol })), undefined, protocol);
+  }
 });
 
 test("the original body object is never mutated", () => {

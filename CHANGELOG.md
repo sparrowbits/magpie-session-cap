@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1
+
+- Restricts processing to the Responses API; other protocols pass through unchanged.
+- Fixes UTF-8/base64 encoding for supplementary Unicode characters in file mode.
+- Clamps kept user turns to the channel's measured cap.
+- Labels folded history as quoted context rather than fresh instructions.
+- Fixes the npm test script for Node.js 18+ test discovery.
+
 ## 1.0.0
 
 First release.
