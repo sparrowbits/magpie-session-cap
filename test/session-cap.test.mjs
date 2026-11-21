@@ -67,18 +67,20 @@ test("folding keeps user messages at or under keepTurns", () => {
   for (const keep of [5, 9, 10]) {
     const out = onRequest({ model: "m", prompt_cache_key: "th", input: history(40) }, ctx({ keepTurns: keep }));
     assert.ok(out, "expected a rewritten body");
-    assert.equal(users(out.input), keep, "keepTurns=" + keep);
+    assert.equal(users(out.input), Math.min(keep, 9) + 1, "digest plus kept turns=" + keep);
+    assert.ok(users(out.input) <= 10);
   }
 });
 
-test("the digest rides in a developer message by default, costing no turn", () => {
+test("the digest defaults to user role and is explicitly labelled as quoted data", () => {
   const out = onRequest({ model: "m", prompt_cache_key: "th", input: history(30) }, ctx({ keepTurns: 9 }));
-  assert.equal(out.input[1].role, "developer");
-  assert.equal(out.input[1].type, "message");
+  assert.equal(out.input[1].role, "user");
+  assert.match(JSON.stringify(out.input[1]), /untrusted historical data/);
+  assert.equal(users(out.input), 10, "one digest plus nine recent user turns");
 });
 
-test("foldTarget moves the digest between developer, system, user and file", () => {
-  for (const [target, role] of [["developer", "developer"], ["system", "system"], ["user", "user"], ["file", "developer"]]) {
+test("foldTarget options have the expected role and stay under the turn cap", () => {
+  for (const [target, role] of [["developer", "developer"], ["system", "system"], ["user", "user"], ["file", "user"]]) {
     const out = onRequest({ model: "m", prompt_cache_key: "th", input: history(30) }, ctx({ keepTurns: 9, foldTarget: target }));
     assert.equal(out.input[1].role, role, target);
     const part = out.input[1].content[0];
@@ -127,7 +129,7 @@ test("the digest cut keeps the oldest fifth and the newest rest", () => {
   const out = onRequest({ model: "m", prompt_cache_key: "th", input: history(400, { outSize: 20000 }) }, ctx({ keepTurns: 9, foldChars: 400000 }));
   const digest = JSON.stringify(out.input[1]);
   assert.match(digest, /dlhcbqwoq-9/, "the opening turns must survive the cut");
-  assert.match(digest, /middle .* dropped/, "the cut must be marked");
+  assert.match(digest, /middle omitted by gateway/, "the cut must be marked");
 });
 
 test("maxBodyChars bounds the whole request whatever the session length", () => {
@@ -137,6 +139,31 @@ test("maxBodyChars bounds the whole request whatever the session length", () => 
   });
   for (const s of sizes) assert.ok(s < 420000, "sizes=" + sizes.join(","));
   assert.ok(Math.max(...sizes) - Math.min(...sizes) < 60000, "sizes should plateau, got " + sizes.join(","));
+});
+
+test("oversized preserved media fails open instead of silently dropping the digest", () => {
+  const input = history(30);
+  input[5] = { type: "message", role: "user", content: [
+    { type: "input_text", text: "large attachment" },
+    { type: "input_file", filename: "large.bin", file_data: "data:application/octet-stream;base64," + "A".repeat(100000) }
+  ] };
+  const body = { model: "m", prompt_cache_key: "th", input };
+  const out = onRequest(body, ctx({ keepTurns: 9, maxBodyChars: 60000 }));
+  assert.equal(out, undefined, "when fixed media cannot fit, preserve the original request unchanged");
+  assert.equal(users(body.input), 31);
+});
+
+test("maxBodyChars is measured in UTF-8 bytes and stays within budget", () => {
+  const input = [DEV("instructions")];
+  for (let i = 1; i <= 30; i++) {
+    if (i > 1) input.push(A("ack"));
+    input.push(U("emoji 🚀 🧠 " + "中".repeat(80) + " turn " + i));
+  }
+  input.push(U("final question"));
+  const body = { model: "m", prompt_cache_key: "th", input, other: "🧩".repeat(1000) };
+  const out = onRequest(body, ctx({ keepTurns: 9, maxBodyChars: 60000, foldChars: 50000 }));
+  const byteSize = Buffer.byteLength(JSON.stringify(out), "utf8");
+  assert.ok(byteSize <= 60000, "serialized request is " + byteSize + " bytes");
 });
 
 test("the rolled key is stable inside a bucket and moves as the session grows", () => {
@@ -151,6 +178,13 @@ test("the rolled key is stable inside a bucket and moves as the session grows", 
     onRequest({ model: "m", prompt_cache_key: "thread-1", input: history(turns) }, ctx({ keepTurns: 9 })).prompt_cache_key);
   assert.equal(new Set(grown).size, grown.length, "the key must advance with the session");
   for (const k of grown) assert.match(k, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, "must look like a uuid");
+});
+
+test("stateless requests with identical bodies get the same key within one window", () => {
+  const body = { model: "m", prompt_cache_key: "same-thread", input: history(12) };
+  const a = onRequest(body, ctx({ keepTurns: 9 }));
+  const b = onRequest(body, ctx({ keepTurns: 9 }));
+  assert.equal(a.prompt_cache_key, b.prompt_cache_key);
 });
 
 test("a different thread id gets a different key", () => {
@@ -190,15 +224,42 @@ test("requests with nothing to fold or no key to roll are returned untouched", (
   assert.equal(onRequest({ model: "m", prompt_cache_key: "th", input: history(30) }, ctx({ keepTurns: 9, dryRun: true })), undefined, "dryRun");
 });
 
+test("folding preserves image/file parts from old turns", () => {
+  const input = history(30);
+  input[5] = { type: "message", role: "user", content: [
+    { type: "input_text", text: "What is in this image?" },
+    { type: "input_image", image_url: "data:image/png;base64,AAAA" },
+    { type: "input_file", filename: "notes.txt", file_data: "data:text/plain;base64,SGk=" },
+  ] };
+  for (const target of ["user", "developer", "system", "file"]) {
+    const out = onRequest({ model: "m", prompt_cache_key: "th", input }, ctx({ keepTurns: 9, foldTarget: target }));
+    const digest = out.input[1];
+    assert.equal(digest.role, "user", "media transcripts stay at user priority");
+    assert.ok(digest.content.some((p) => p.type === "input_image"), "image part retained");
+    assert.ok(digest.content.some((p) => p.type === "input_file" && p.filename === "notes.txt"), "file part retained");
+    assert.ok(users(out.input) <= 10);
+  }
+});
+
 test("file mode round-trips Unicode including astral characters", () => {
   const input = history(30);
-  input[2] = U("The marker is rocket 🚀 and brain 🧠 and staging database dlhcbqwoq-9");
+  input[5] = U("The marker is rocket 🚀 and brain 🧠 and staging database dlhcbqwoq-9");
   const out = onRequest({ model: "m", prompt_cache_key: "th", input }, ctx({ keepTurns: 9, foldTarget: "file" }));
   const part = out.input[1].content[0];
   const decoded = Buffer.from(part.file_data.split(",")[1], "base64").toString("utf8");
   assert.match(decoded, /🚀/);
   assert.match(decoded, /🧠/);
   assert.match(decoded, /dlhcbqwoq-9/);
+});
+
+test("malformed numeric options fall back safely instead of producing an unbounded body", () => {
+  const out = onRequest(
+    { model: "m", prompt_cache_key: "th", input: history(40, { outSize: 5000 }) },
+    ctx({ keepTurns: Infinity, turnCap: NaN, foldChars: -Infinity, itemChars: "broken", maxBodyChars: Infinity, per: NaN, turnsPer: -3, windowMinutes: NaN })
+  );
+  assert.ok(out);
+  assert.ok(users(out.input) <= 10);
+  assert.ok(JSON.stringify(out).length < 1_000_000);
 });
 
 test("non-Responses protocols pass through unchanged", () => {

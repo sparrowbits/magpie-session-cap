@@ -31,8 +31,8 @@ The measurements behind each cell:
 - A brand-new key carrying 11 user messages: **400** — the turn rule ignores keys entirely.
 - The exhausted key, same conversation trimmed back to 10 user messages: **200** — only the body can fix it.
 - 1 user message + 14 `function_call`/`function_call_output` pairs (29 items): **all 200** — tool round trips are not turns.
-- 12 `developer` (or 12 `system`) messages + 1 user message: **200** — a message costs a turn only when its role is `user`.
-- 1.2 MB `developer` message, **584,434 input tokens**: **200, and answered from it** — length is not the constraint; that is the ceiling this package leaves headroom under.
+- 12 `developer` (or 12 `system`) messages + 1 user message: **200** — a message costs a turn only when its role is `user`. This is why the default fold keeps the transcript in user role and reserves one of the ten turns.
+- 1.2 MB `developer` message, **584,434 input tokens**: **200, and answered from it** — this was a context-window probe, not the default digest role. `maxBodyChars` leaves headroom below this measured point.
 - The channel also fingerprints the client: a plain `curl` with a generic UA is refused with `client_not_allowed`. magpie already sends the Codex Desktop shape, so requests through it pass.
 
 Codex fills `prompt_cache_key` with its thread id and resends the whole conversation on every request, so a long-running agent loop reaches both caps quickly — and magpie's subagents share the parent's key, which burns the 100 requests even faster.
@@ -41,16 +41,16 @@ Codex fills `prompt_cache_key` with its thread id and resends the whole conversa
 
 **Rolls the cache key** for cap 1. The key becomes a UUID derived from the client's thread id plus a bucket. One bucket is one stable key, so prompt caching keeps working; crossing a bucket moves to a key the channel has never counted.
 
-**Folds the older turns** for cap 2. Past `keepTurns`, the earliest turns are collapsed into a single digest message that carries their text, and the request goes under the turn cap again. Nothing is deleted: the digest rides in a message whose role is not `user`, which costs no turn, so folding is free rather than spending one of the ten.
+**Folds the older turns** for cap 2. Past `keepTurns`, the earliest turns are collapsed into a quoted digest user message, followed by the recent turns. The digest is explicitly labelled as untrusted historical data; it is not promoted to developer/system instruction priority. The digest itself counts as one user message, so the default keeps at most nine recent user turns.
 
-Both are derived from the request itself. magpie runs each middleware call in a fresh JavaScript isolate — `globalThis`, module state and `ctx.state` are all new every request, and there is no `fetch`, no timer and no crypto — so nothing can be counted in memory. The history the client sends only ever grows, which makes it a free stateless counter.
+Both are derived from the request itself. magpie runs each middleware call in a fresh JavaScript isolate — `globalThis`, module state and `ctx.state` are all new every request, and there is no `fetch`, no timer and no crypto — so nothing can be counted in memory. Key rotation is therefore best-effort, not an exact request counter: identical retries with an identical body get the same key during a time window. `rotateAlways` changes the key at millisecond granularity, not with a persistent sequence number. The body-growth buckets protect normal growing Codex sessions, while exact per-request rotation would require state in magpie itself.
 
-The fold is deterministic: it flattens turns to text rather than summarising them, because a stateless middleware with no network cannot ask a model for a summary. Flattening loses layout, not content, and costs no tokens and no latency.
+The fold is deterministic: text is flattened rather than semantically summarised because a stateless middleware with no network cannot ask a model to write a summary. Text layout is reduced; media parts are retained as parts. Flattening does not reduce token usage for retained text and adds a small label/formatting overhead; folding and cache-key changes can also reduce prompt-cache hits.
 
 ## Options
 
 ```bash
-magpie plugin options magpie-session-cap '{"providers":["xingchiapi"],"keepTurns":9,"fold":true,"foldTarget":"developer"}'
+magpie plugin options magpie-session-cap '{"providers":["xingchiapi"],"keepTurns":9,"fold":true,"foldTarget":"user"}'
 magpie plugin options magpie-session-cap          # read them back
 magpie plugin list                                # is it on?
 ```
@@ -60,19 +60,19 @@ magpie plugin list                                # is it on?
 | `providers` | all | only these provider ids. Taken from the `provider/` prefix of the model magpie routes on, or `ctx.provider` when the host gives one. |
 | `models` | all | only when the routed model contains one of these substrings. |
 | `protocols` | all | The middleware itself only handles `responses`; other protocols always pass through unchanged. This field is reserved for future protocol-specific handlers. |
-| `keepTurns` | `9` | recent turns kept verbatim; older ones folded. The hard cap is 10 — set it to 10 only if your client never adds a user message of its own. |
+| `keepTurns` | `9` | recent turns kept verbatim; older ones folded. User-role digests reserve one slot, so the effective maximum is 9. |
 | `turnCap` | `keepTurns` | fold once user messages exceed this. |
 | `fold` | `true` | `false` drops the old turns instead of folding them: cheaper, and the model genuinely forgets. |
-| `foldTarget` | `developer` | where the digest goes: `developer` \| `system` \| `user` \| `file`. Only `user` costs a turn. The digest is labelled as untrusted historical context, not a new instruction. |
+| `foldTarget` | `user` | where the digest goes: `user` \| `developer` \| `system` \| `file`. User/file digests cost one turn and reserve one of the ten. Higher-priority roles are explicit opt-ins; when old turns contain media, the digest stays in user role to preserve the attachments. |
 | `foldLabel` | built in | first line of the digest; say what it is, the model reads it literally. |
 | `itemChars` | `20000` | cap on one quoted item. Over the cap it keeps **the first 60% and the last 40%** and marks the gap: the tail of a tool output is where errors and totals sit. |
 | `foldChars` | `1200000` | cap on the digest. Over it, keeps **the oldest fifth and the newest rest**: the opening turns hold the decisions everything later rests on. |
-| `maxBodyChars` | `1000000` | total budget, about 320k tokens at the ~3.1 chars/token this text measures. The digest gives way first; kept turns are never trimmed for this. Without it a long session walks past the model's window and fails outright, which is worse than any cap. |
+| `maxBodyChars` | `1000000` | maximum serialized UTF-8 request bytes after folding. The digest gives way first; kept turns and media are not silently removed. If they alone exceed the budget, the original body passes through unchanged. |
 | `per` | `150` | input items per key bucket. |
 | `turnsPer` | `8` | turns per key bucket. |
 | `windowMinutes` | `10` | a key never lives longer than this, whatever the body looks like. The backstop for a client that compacts its own history and so stops growing the counter. |
 | `header` | `prompt_cache_key` | the body field to rotate. |
-| `rotateAlways` | off | a new key every request: never over the request cap, and never cached either. |
+| `rotateAlways` | off | changes the key at millisecond granularity. It cannot guarantee unique keys for two calls in the same millisecond because middleware calls have no persistent counter. |
 | `dryRun` | off | decide, change nothing. |
 
 ## Recipes
@@ -89,10 +89,10 @@ magpie plugin list                                # is it on?
 { "providers": ["xingchiapi", "aihub"], "keepTurns": 9 }
 ```
 
-**Never let a session run past 10 turns without folding** — for a channel you want to stay fully honest with:
+**Fold before the relay rejects the request** — keep nine turns verbatim and fold older history into a quoted digest:
 
 ```json
-{ "providers": ["xingchiapi"], "turnCap": 9, "keepTurns": 9, "fold": true }
+{ "providers": ["xingchiapi"], "turnCap": 9, "keepTurns": 9, "fold": true, "foldTarget": "user" }
 ```
 
 **Cheaper, and the model forgets** — drop instead of fold:
@@ -101,17 +101,17 @@ magpie plugin list                                # is it on?
 { "providers": ["xingchiapi"], "fold": false, "keepTurns": 6 }
 ```
 
-**Biggest possible fidelity, tokens be damned** — raise both caps and the budget, and watch the window:
+**Biggest possible fidelity, tokens be damned** — keep nine recent turns and raise the digest budget, while leaving room under the model window:
 
 ```json
-{ "providers": ["xingchiapi"], "keepTurns": 10, "itemChars": 60000, "foldChars": 1600000, "maxBodyChars": 1500000 }
+{ "providers": ["xingchiapi"], "keepTurns": 9, "itemChars": 60000, "foldChars": 1600000, "maxBodyChars": 1500000 }
 ```
 
 ## Verified behaviour
 
-`npm test` runs 19 cases over the fold and the roll: turn counting, digest placement, no `function_call` ever split from its `function_call_output`, preamble preserved, early facts surviving a fold and genuinely lost without it, head-and-tail clipping, the budget plateau across 40/120/400-turn sessions, key stability inside a bucket and advance across buckets, scoping, and that the caller's own body object is never mutated.
+`npm test` runs 24 cases over the fold and the roll: turn counting, digest placement, no `function_call` ever split from its `function_call_output`, preamble preserved, early facts surviving a fold and genuinely lost without it, head-and-tail clipping, the budget plateau across 40/120/400-turn sessions, key stability inside a bucket and advance across buckets, scoping, and that the caller's own body object is never mutated.
 
-End to end, through magpie's `/backend-api/codex/responses` on a real 60-turn conversation with facts planted in turns 2, 5 and 30:
+Before the default digest role was changed to user priority, an end-to-end test through magpie's `/backend-api/codex/responses` used a 60-turn conversation with facts planted in turns 2, 5 and 30:
 
 ```
 HTTP 200   in=56,342 tokens
@@ -122,7 +122,7 @@ and a sweep at 12/20/25/40/60/80 turns: 5 successes, all 5 recalling the turn-2 
 
 ## Limits
 
-- **It is not a summary.** The digest is the turns flattened to text. A 200-turn conversation with long tool outputs becomes a large, flat block: the model answers from it, but quotes of very early material get less structure than they would from a real compaction. If you want a written summary, that belongs in magpie's `compact_model` path, which triggers on tokens and cannot be driven by turn count.
+- **It is not a summary.** The digest is the turns flattened to text. Text-only history is quoted; image/file content parts are retained verbatim in user-role digests. A 200-turn conversation with long tool outputs becomes a large, flat block: early material can lose structure, and media-heavy history can exceed `maxBodyChars`. If the fixed context and kept turns alone exceed the budget, the middleware leaves the original request unchanged rather than silently deleting the history. If you want a written summary, that belongs in magpie's `compact_model` path, which triggers on tokens and cannot be driven by turn count.
 - **The turn cap is a body rule, so history has to shrink on the way out.** Folding is the honest fix; `/new` remains the lossless one.
 - **`prompt_cache_key` is also magpie's session→account affinity key** (`~/.config/magpie/affinity.json`). Rolling it re-picks an account at each bucket. Harmless with one account per provider; worth knowing with several.
 - **A channel could count on something else** — a header, `previous_response_id`, the body hash. This package is measured against 星驰. `header` covers a differently-named field; anything else needs a new signal and an issue.
