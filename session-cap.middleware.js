@@ -8,11 +8,13 @@
 //      `prompt_cache_key`, which Codex fills with its thread id. The 101st
 //      request on a key is refused; a fresh key is accepted at once; the count
 //      does not decay with time.
-//   2. session_turn_limit_exceeded — any request whose `input` carries 11 or
-//      more role=user message items is refused, whatever key it uses. Tool
-//      calls do not count, only user messages. The same conversation folded
-//      back under the cap passes again, even on an exhausted key, so no key
-//      change can help here: only the body can.
+//   2. session_turn_limit_exceeded — any request whose `input` carries more
+//      role=user message items than the channel allows is refused, whatever key
+//      it uses. Tool calls do not count, only user messages. The cap measured 10
+//      in mid-Nov 2026 and 20 by late Nov on the same channel, so it is a
+//      channel-side setting that moves; `userTurnLimit` is therefore an option,
+//      not a constant. The same conversation folded back under the cap passes
+//      again, even on an exhausted key, so no key change can help: only the body.
 //
 // (1) is handled best-effort by deriving a bucketed cache key from the client
 // thread id and request history. Because magpie starts each hook in a fresh
@@ -20,9 +22,9 @@
 // within the same bucket map to the same key.
 //
 // (2) is handled by folding old turns into a quoted digest user message, keeping
-// at most nine recent user turns so the digest plus recent history stays within
-// the measured ten-message cap. The digest is marked as untrusted historical
-// text and is not promoted to developer/system priority by default.
+// `keepTurns` recent user turns so the digest plus recent history stays within
+// `userTurnLimit`. The digest is marked as untrusted historical text and is not
+// promoted to developer/system priority by default.
 //
 // Folding is deterministic, not semantic summarization. Old text is flattened;
 // clipped text and over-budget middle sections can be omitted. Media content
@@ -33,7 +35,8 @@
 //   providers      only these provider ids (from "provider/model", or ctx.provider)
 //   models         only when the model contains one of these substrings
 //   protocols      Responses API only; other protocols pass through
-//   keepTurns      recent turns kept verbatim, older ones folded   (default 9)
+//   userTurnLimit  the channel's cap on role=user messages in a request (default 20)
+//   keepTurns      recent turns kept verbatim, older ones folded  (default 19)
 //   turnCap        fold once user messages exceed this             (default keepTurns)
 //   fold           collapse old turns into a digest; false drops them (default true)
 //   foldTarget     where the digest goes: user|developer|system|file (default user)
@@ -293,11 +296,11 @@ export function onRequest(body, ctx) {
   const target = ["user", "developer", "system", "file"].includes(requestedTarget)
     ? requestedTarget
     : "user";
-  const maxUserTurns = 10;
+  const maxUserTurns = positiveInt(o.userTurnLimit || o.turnLimit, 20);
   // Reserve one user-message slot for the digest. Even a developer/system/file
   // target can be downgraded to user when it contains media parts.
   const maxKeptTurns = fold ? maxUserTurns - 1 : maxUserTurns;
-  const requestedKeep = positiveInt(o.keepTurns, 9);
+  const requestedKeep = positiveInt(o.keepTurns, 19);
   const requestedLimit = positiveInt(o.turnCap, requestedKeep);
   const keep = Math.min(maxKeptTurns, requestedKeep, requestedLimit);
   const limit = Math.min(maxUserTurns, Math.max(keep, requestedLimit));

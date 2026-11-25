@@ -64,12 +64,29 @@ test("a request under the turn cap keeps its history but gets a rolled key", () 
 });
 
 test("folding keeps user messages at or under keepTurns", () => {
-  for (const keep of [5, 9, 10]) {
+  for (const keep of [5, 9, 19, 25]) {
     const out = onRequest({ model: "m", prompt_cache_key: "th", input: history(40) }, ctx({ keepTurns: keep }));
     assert.ok(out, "expected a rewritten body");
-    assert.equal(users(out.input), Math.min(keep, 9) + 1, "digest plus kept turns=" + keep);
-    assert.ok(users(out.input) <= 10);
+    assert.equal(users(out.input), Math.min(keep, 19) + 1, "digest plus kept turns=" + keep);
+    assert.ok(users(out.input) <= 20);
   }
+});
+
+test("the channel's turn cap is an option, not a constant", () => {
+  for (const limit of [10, 20, 30]) {
+    const out = onRequest(
+      { model: "m", prompt_cache_key: "th", input: history(60) },
+      ctx({ userTurnLimit: limit, keepTurns: limit, fold: true })
+    );
+    assert.ok(users(out.input) <= limit, "limit=" + limit + " got " + users(out.input));
+    assert.equal(users(out.input), limit, "fills the cap exactly: " + limit);
+  }
+});
+
+test("defaults target the measured 20-turn cap", () => {
+  const out = onRequest({ model: "m", prompt_cache_key: "th", input: history(60) }, ctx({}));
+  assert.equal(users(out.input), 20, "19 kept turns plus the digest");
+  assert.equal(out.input[1].role, "user");
 });
 
 test("the digest defaults to user role and is explicitly labelled as quoted data", () => {
@@ -84,7 +101,7 @@ test("foldTarget options have the expected role and stay under the turn cap", ()
     const out = onRequest({ model: "m", prompt_cache_key: "th", input: history(30) }, ctx({ keepTurns: 9, foldTarget: target }));
     assert.equal(out.input[1].role, role, target);
     const part = out.input[1].content[0];
-    assert.ok(users(out.input) <= 10, target + " must stay under the relay turn cap");
+    assert.ok(users(out.input) <= 20, target + " must stay under the relay turn cap");
     if (target === "file") {
       assert.equal(part.type, "input_file");
       assert.equal(part.filename, "folded-history.txt");
@@ -237,7 +254,7 @@ test("folding preserves image/file parts from old turns", () => {
     assert.equal(digest.role, "user", "media transcripts stay at user priority");
     assert.ok(digest.content.some((p) => p.type === "input_image"), "image part retained");
     assert.ok(digest.content.some((p) => p.type === "input_file" && p.filename === "notes.txt"), "file part retained");
-    assert.ok(users(out.input) <= 10);
+    assert.ok(users(out.input) <= 20);
   }
 });
 
@@ -258,7 +275,7 @@ test("malformed numeric options fall back safely instead of producing an unbound
     ctx({ keepTurns: Infinity, turnCap: NaN, foldChars: -Infinity, itemChars: "broken", maxBodyChars: Infinity, per: NaN, turnsPer: -3, windowMinutes: NaN })
   );
   assert.ok(out);
-  assert.ok(users(out.input) <= 10);
+  assert.ok(users(out.input) <= 20);
   assert.ok(JSON.stringify(out).length < 1_000_000);
 });
 

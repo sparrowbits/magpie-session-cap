@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.3
+
+- The channel's turn cap is now an option, `userTurnLimit`, instead of the constant 10.
+- Defaults follow the re-measured cap: 20 user messages, so `keepTurns` is 19 plus the digest.
+- Re-measured on 星驰 2026-11-25: 20 user messages pass, 21 returns `session_turn_limit_exceeded`.
+- The old 100-requests-per-key ceiling is no longer enforced at 100 on the same channel:
+  120 requests sharing one `prompt_cache_key` all returned 200. Key rotation stays as a cheap safeguard.
+- Adds tests that the cap follows `userTurnLimit` (10, 20, 30) and that defaults fill it exactly.
+
 ## 1.0.2
 
 - Defaults folded history to a labelled `user` message instead of developer priority.

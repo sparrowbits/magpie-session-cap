@@ -1,7 +1,7 @@
 {
   "name": "magpie-session-cap",
-  "version": "1.0.2",
-  "description": "magpie Responses middleware that best-effort rotates prompt_cache_key and folds older Codex turns into a quoted user-context digest while preserving recent history and media parts.",
+  "version": "1.0.3",
+  "description": "magpie Responses middleware that best-effort rotates prompt_cache_key and folds older Codex turns into a quoted user-context digest while honouring the channel's configurable turn cap and preserving recent history and media parts.",
   "type": "module",
   "main": "./session-cap.middleware.js",
   "exports": {
@@ -55,7 +55,8 @@
       "providers": [
         "xingchiapi"
       ],
-      "keepTurns": 9,
+      "userTurnLimit": 20,
+      "keepTurns": 19,
       "fold": true,
       "foldTarget": "user"
     }
